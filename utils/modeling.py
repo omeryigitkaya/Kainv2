@@ -11,7 +11,6 @@ from pypfopt.exceptions import OptimizationError
 from sklearn.preprocessing import MinMaxScaler
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense, Dropout
-from scipy.stats import zscore
 import nltk
 from nltk.sentiment.vader import SentimentIntensityAnalyzer
 
@@ -84,27 +83,31 @@ def sinyal_uret_ensemble_lstm(fiyat_verisi):
 @st.cache_data
 def calculate_multi_factor_score(faktör_verileri, agirliklar):
     df = pd.DataFrame(faktör_verileri).T.astype(float)
-    df = df.apply(lambda x: x.fillna(x.mean()), axis=0)
-    
-    # --- DEĞİŞİKLİK BURADA ---
-    # Sıfıra bölme hatasını engellemek için Z-skorunu güvenli bir şekilde hesaplıyoruz.
-    z_scores = {}
-    for col in df.columns:
-        if df[col].std() == 0:
-            z_scores[col] = 0.0 # Eğer standart sapma 0 ise, Z-skoru da 0'dır.
-        else:
-            z_scores[col] = (df[col] - df[col].mean()) / df[col].std()
-    
-    df_zscore = pd.DataFrame(z_scores)
-    # --- DEĞİŞİKLİK SONU ---
+    df = df.apply(lambda x: x.fillna(x.mean()), axis=0) # Fill NaNs with column mean
 
+    # --- NIHAI HATA DÜZELTMESİ BURADA ---
+    # Z-skorunu güvenli bir şekilde hesaplayarak sıfıra bölme hatasını engelliyoruz.
+    df_zscore = df.copy()
+    for col in df.columns:
+        col_std = df[col].std()
+        col_mean = df[col].mean()
+        if col_std > 0:
+            df_zscore[col] = (df[col] - col_mean) / col_std
+        else:
+            # If all values in the column are the same, their z-score is 0.
+            df_zscore[col] = 0
+            
     final_scores = (df_zscore * pd.Series(agirliklar)).sum(axis=1)
-    return final_scores.fillna(0) # Olası NaN değerlerini temizle
+    return final_scores.fillna(0)
 
 @st.cache_data
 def portfoyu_optimize_et(nihai_skorlar, fiyat_verisi, piyasa_rejimi):
-    if nihai_skorlar.empty: return {}
-    
+    # Girdilerin geçerli olup olmadığını kontrol et
+    if nihai_skorlar.empty or nihai_skorlar.isnull().all() or (nihai_skorlar == 0).all():
+        st.warning("Anlamlı bir sinyal üretilemedi. Varlıklar eşit olarak dağıtılacak.")
+        num_assets = len(fiyat_verisi.columns)
+        return {ticker: 1/num_assets for ticker in fiyat_verisi.columns}
+
     try:
         S = risk_models.CovarianceShrinkage(fiyat_verisi[nihai_skorlar.index]).ledoit_wolf()
     except Exception:
@@ -121,6 +124,7 @@ def portfoyu_optimize_et(nihai_skorlar, fiyat_verisi, piyasa_rejimi):
         try: 
             weights = ef.min_volatility()
         except (ValueError, OptimizationError): 
-            return {ticker: 1/len(S) for ticker in S.columns}
+            num_assets = len(S.columns)
+            return {ticker: 1/num_assets for ticker in S.columns}
             
     return {k: v for k, v in weights.items() if v > 0.001}
