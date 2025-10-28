@@ -1,0 +1,14 @@
+# .streamlit/config.toml
+[theme]
+# "Sade" bir görünüm için açık (light) temayı temel al
+base="light"
+# Ana etkileşim rengi (düğmeler, kaydırıcılar)
+primaryColor="#0068C9" # Profesyonel bir mavi tonu
+# Ana arka plan rengi
+backgroundColor="#FFFFFF"
+# Widget'lar ve kenar çubuğu için ikincil arka plan
+secondaryBackgroundColor="#F0F2F6"
+# Metin rengi (tam siyah yerine)
+textColor="#0A141A"
+# Yazı tipi
+font="sans serif"
