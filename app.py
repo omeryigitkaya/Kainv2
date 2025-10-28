@@ -2,13 +2,10 @@
 
 import streamlit as st
 import pandas as pd
-import yfinance as yf
 import requests
 
-# 'persistence' and 'plotly' ile ilgili her şey kaldırıldı.
 from utils.modeling import (piyasa_rejimini_belirle, veri_cek_ve_dogrula, sinyal_uret_ensemble_lstm,
-                            sinyal_uret_ceyrekli_momentum, calculate_multi_factor_score,
-                            portfoyu_optimize_et, cizim_yap_agirliklar)
+                            calculate_multi_factor_score, portfoyu_optimize_et, cizim_yap_agirliklar)
 from utils.data_sourcing import get_fundamental_data, get_sentiment_score, varliklari_kesfet
 
 st.set_page_config(layout="wide", page_title="Kainvest 2.0")
@@ -34,25 +31,22 @@ def get_tickers_from_github(user, repo, path):
         st.error(f"Varlık listesi çekilemedi: {e}"); return None
 
 def run_analysis(plan_tipi, agirliklar, tickers, yatirim_tutari):
-    with st.spinner(f"{plan_tipi} portföy analiz ediliyor..."):
+    with st.spinner(f"{plan_tipi} portföy analiz ediliyor... Bu işlem birkaç dakika sürebilir."):
         rejim = piyasa_rejimini_belirle()
         st.subheader(f"Piyasa Rejimi: {rejim}")
         
         fiyatlar = veri_cek_ve_dogrula(tickers, "2020-01-01", pd.to_datetime("today").strftime('%Y-%m-%d'))
         if fiyatlar.empty: st.error("Analiz için yeterli veri bulunamadı."); return
 
-        faktörler, sinyal_detaylari = {}, {}
+        faktörler, sinyal_detaylari = {}, {} 
         progress_bar = st.progress(0, text="Sinyaller üretiliyor...")
         
         for i, ticker in enumerate(fiyatlar.columns):
-            if plan_tipi == "Haftalık":
-                sinyal_data = sinyal_uret_ensemble_lstm(fiyatlar[ticker])
-                teknik_skor = sinyal_data["tahmin_yuzde"]
-            else: # Çeyreklik Plan
-                sinyal_data = sinyal_uret_ceyrekli_momentum(fiyatlar[ticker])
-                teknik_skor = sinyal_data["tahmin_yuzde"]
-            
+            # Her iki plan için de artık ana teknik sinyal kaynağı LSTM
+            sinyal_data = sinyal_uret_ensemble_lstm(fiyatlar[ticker])
+            teknik_skor = sinyal_data["tahmin_yuzde"]
             sinyal_detaylari[ticker] = sinyal_data
+            
             deger_data = get_fundamental_data(ticker)
             deger_skoru = (1/deger_data['pe_ratio'] + 1/deger_data['pb_ratio']) / 2 if deger_data.get('pe_ratio') else 0
             
@@ -60,7 +54,7 @@ def run_analysis(plan_tipi, agirliklar, tickers, yatirim_tutari):
                 'teknik_skor': teknik_skor, 'deger_skoru': deger_skoru,
                 'duyarlilik_skoru': get_sentiment_score(ticker)
             }
-            progress_bar.progress((i + 1) / len(fiyatlar.columns), text=f"Sinyal üretiliyor: {ticker}")
+            progress_bar.progress((i + 1) / len(fiyatlar.columns), text=f"Yapay zeka sinyali üretiliyor: {ticker}")
         progress_bar.empty()
 
         skorlar = calculate_multi_factor_score(faktörler, agirliklar)
@@ -82,7 +76,7 @@ def run_analysis(plan_tipi, agirliklar, tickers, yatirim_tutari):
                 })
 
             report_df = pd.DataFrame(report_data)
-            format_dict = {'Ağırlık': '{:.2%}', 'Yatırılacak Miktar ($)': '{:,.2f}', 'Alım Fiyatı': '{:.2f}',
+            format_dict = {'Ağırlık': '{:.2%}', 'Yatırılacak Miktar ($)': '{:,.2f}', 'Alım Fiyatı': '{:.2f}', 
                            'Hedef Fiyat': '{:.2f}', 'Beklenti': '{:+.2%}', 'Tahmini Değer ($)': '{:,.2f}'}
             st.dataframe(report_df.style.format(format_dict))
 
@@ -119,7 +113,8 @@ with tab1:
 
 with tab2:
     st.header("Çeyreklik Portföy (Orta Vade)")
-    st.info("Bu mod, BİST, NASDAQ, Kripto ve ETF piyasalarını otomatik tarayarak bulduğu potansiyel varlıklar üzerinden orta vadeli (Momentum) bir portföy önerisi sunar.")
+    # Açıklama metni güncellendi
+    st.info("Bu mod, piyasaları otomatik tarayarak bulduğu potansiyel varlıklar üzerinden temel ve yapay zeka (LSTM) odaklı bir portföy önerisi sunar.")
     agirliklar = {'deger_skoru': 0.6, 'teknik_skor': 0.3, 'duyarlilik_skoru': 0.1}
     tutar = st.number_input("Yatırım tutarı (USD):", 1000.0, step=500.0, value=10000.0, key="c_tutar")
     if st.button("Piyasayı Tara ve Çeyreklik Portföy Oluştur"):
