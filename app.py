@@ -2,6 +2,7 @@
 
 import streamlit as st
 import pandas as pd
+import yfinance as yf
 import requests
 import plotly.express as px
 
@@ -15,19 +16,17 @@ st.set_page_config(layout="wide", page_title="Kainvest 2.0")
 def check_password():
     def password_entered():
         if st.session_state["password"] == st.secrets["password"]:
-            st.session_state["password_correct"] = True
-            del st.session_state["password"]
-        else:
-            st.session_state["password_correct"] = False
+            st.session_state["password_correct"] = True; del st.session_state["password"]
+        else: st.session_state["password_correct"] = False
     if "password_correct" not in st.session_state:
         st.text_input("Şifre", type="password", on_change=password_entered, key="password"); return False
     elif not st.session_state["password_correct"]:
         st.text_input("Şifre", type="password", on_change=password_entered, key="password"); st.error("😕 Şifre yanlış."); return False
     return True
 
-@st.cache_data(show_spinner="Varlık listesi GitHub'dan çekiliyor...")
+# Önbellekleme kaldırıldı, böylece her zaman en güncel listeyi okur.
 def get_tickers_from_github(user, repo, path):
-    url = f"https://raw.githubusercontent.com/{user}/{repo}/main/{path}"
+    url = f"https.raw.githubusercontent.com/{user}/{repo}/main/{path}"
     try:
         response = requests.get(url, timeout=10)
         response.raise_for_status()
@@ -43,9 +42,30 @@ def run_analysis(plan_tipi, agirliklar, tickers, yatirim_tutari):
         fiyatlar = veri_cek_ve_dogrula(tickers, "2022-01-01", pd.to_datetime("today").strftime('%Y-%m-%d'))
         if fiyatlar.empty: st.error("Analiz için yeterli veri bulunamadı."); return
 
-        faktörler = {t: {'teknik_skor': sinyal_uret_ensemble_lstm(fiyatlar[t]),
-                         'deger_skoru': (1/(d.get('pe_ratio') or 1e9) + 1/(d.get('pb_ratio') or 1e9)) / 2 if (d := get_fundamental_data(t)) else 0,
-                         'duyarlilik_skoru': get_sentiment_score(t)} for t in fiyatlar.columns}
+        faktörler = {}
+        lstm_detaylari = {} # Detaylı sonuçları saklamak için yeni sözlük
+
+        for ticker in fiyatlar.columns:
+            # Plan tipine göre Teknik Faktörü farklılaştırıyoruz
+            if plan_tipi == "Haftalık":
+                lstm_data = sinyal_uret_ensemble_lstm(fiyatlar[ticker])
+                teknik_skor = lstm_data["tahmin_yuzde"]
+                lstm_detaylari[ticker] = lstm_data # Haftalık plan için LSTM detaylarını sakla
+            else: # Yıllık Plan
+                # Yıllık plan için teknik sinyal: Son 12 ayın getirisi (Momentum)
+                fiyat_1yil_once = fiyatlar[ticker].iloc[-252] if len(fiyatlar[ticker]) > 252 else fiyatlar[ticker].iloc[0]
+                teknik_skor = (fiyatlar[ticker].iloc[-1] / fiyat_1yil_once) - 1
+
+            deger_data = get_fundamental_data(ticker)
+            deger_skoru = 0
+            if deger_data.get('pe_ratio') and deger_data.get('pb_ratio'):
+                deger_skoru = (1/deger_data['pe_ratio'] + 1/deger_data['pb_ratio']) / 2
+            
+            faktörler[ticker] = {
+                'teknik_skor': teknik_skor,
+                'deger_skoru': deger_skoru,
+                'duyarlilik_skoru': get_sentiment_score(ticker)
+            }
 
         skorlar = calculate_multi_factor_score(faktörler, agirliklar)
         agirliklar_opt = portfoyu_optimize_et(skorlar, fiyatlar, rejim)
@@ -53,14 +73,43 @@ def run_analysis(plan_tipi, agirliklar, tickers, yatirim_tutari):
         if agirliklar_opt:
             st.success("Analiz Tamamlandı!")
             st.subheader(f"Kişisel {plan_tipi} Yatırım Planı")
-            df = pd.DataFrame([{"Varlık": t, "Ağırlık": w, "Yatırım ($)": yatirim_tutari * w} for t, w in agirliklar_opt.items()])
-            st.dataframe(df.style.format({'Ağırlık': '{:.2%}', 'Yatırım ($)': '{:,.2f}'}))
             
-            st.subheader(f"{plan_tipi} Özet"); 
-            col1, col2 = st.columns([1, 2])
+            # --- YENİ VE DETAYLI RAPORLAMA BÖLÜMÜ ---
+            report_data = []
+            toplam_tahmini_deger = 0
+            
+            for ticker, weight in agirliklar_opt.items():
+                if plan_tipi == "Haftalık":
+                    # Haftalık planda LSTM detaylarını kullan
+                    details = lstm_detaylari[ticker]
+                    tahmini_hafta_sonu_degeri = (yatirim_tutari * weight) * (1 + details['tahmin_yuzde'])
+                    toplam_tahmini_deger += tahmini_hafta_sonu_degeri
+                    report_data.append({
+                        "Varlık": ticker, "Ağırlık": weight, "Yatırılacak Miktar ($)": yatirim_tutari * weight,
+                        "Alım Fiyatı": details['son_fiyat'], "Hedef Fiyat": details['hedef_fiyat'],
+                        "Beklenti": details['tahmin_yuzde'], "Tahmini Değer ($)": tahmini_hafta_sonu_degeri
+                    })
+                else:
+                    # Yıllık planda daha basit bir rapor sun
+                    report_data.append({
+                        "Varlık": ticker, "Ağırlık": weight, "Yatırılacak Miktar ($)": yatirim_tutari * weight,
+                    })
+
+            report_df = pd.DataFrame(report_data)
+            format_dict = {'Ağırlık': '{:.2%}', 'Yatırılacak Miktar ($)': '{:,.2f}'}
+            if plan_tipi == "Haftalık":
+                format_dict.update({'Alım Fiyatı': '{:.2f}', 'Hedef Fiyat': '{:.2f}', 'Beklenti': '{:+.2%}', 'Tahmini Değer ($)': '{:,.2f}'})
+            st.dataframe(report_df.style.format(format_dict))
+
+            st.subheader(f"{plan_tipi} Özet")
+            col1, col2, col3 = st.columns(3)
             col1.metric("Başlangıç Sermayesi", f"${yatirim_tutari:,.2f}")
-            col2.pyplot(cizim_yap_agirliklar(agirliklar_opt))
+            if plan_tipi == "Haftalık" and toplam_tahmini_deger > 0:
+                tahmini_kar_zarar = toplam_tahmini_deger - yatirim_tutari
+                col2.metric("Tahmini Hafta Sonu Değeri", f"${toplam_tahmini_deger:,.2f}")
+                col3.metric("Tahmini Kar/Zarar", f"${tahmini_kar_zarar:,.2f}", f"{tahmini_kar_zarar/yatirim_tutari:.2%}")
             
+            st.pyplot(cizim_yap_agirliklar(agirliklar_opt))
             save_portfolio_to_gsheets(plan_tipi, agirliklar_opt, yatirim_tutari)
         else: st.error("Portföy optimizasyonu başarısız oldu.")
 
@@ -82,28 +131,24 @@ with tab1:
     if st.button("Haftalık Analizi Başlat"): run_analysis("Haftalık", agirliklar, tickers, tutar)
 
 with tab2:
-    st.header("Yıllık Portföy (Temel Değerleme Ağırlıklı)")
-    agirliklar = {'deger_skoru': 0.6, 'duyarlilik_skoru': 0.3, 'teknik_skor': 0.1}
+    st.header("Yıllık Portföy (Temel Değerleme & Momentum Ağırlıklı)")
+    agirliklar = {'deger_skoru': 0.6, 'teknik_skor': 0.3, 'duyarlilik_skoru': 0.1}
     tutar = st.number_input("Yatırım tutarı (USD):", 1000.0, step=500.0, value=10000.0, key="y_tutar")
     if st.button("Yıllık Analizi Başlat"): run_analysis("Yıllık", agirliklar, tickers, tutar)
 
 with tab3:
     st.header("Geçmiş Portföy Performansı (K/Z)")
     portfolios = load_all_portfolios_from_gsheets()
-    
     if not portfolios.empty:
         portfolios['display'] = portfolios.apply(lambda r: f"{r['created_timestamp'].strftime('%d-%m-%Y %H:%M')} - {r['plan_type']}", axis=1)
         portfolios = portfolios.sort_values('created_timestamp', ascending=False)
-        
         option = st.selectbox('İncelenecek portföyü seçin:', portfolios['display'], label_visibility="collapsed")
-        
         if option:
             selected_id = portfolios[portfolios['display'] == option]['portfolio_id'].iloc[0]
             with st.spinner("Performans hesaplanıyor..."):
                 result = calculate_pl(selected_id)
                 if result:
                     st.metric("Portföyün Toplam Getirisi", f"{result['total_return']:.2%}")
-                    
                     col1, col2 = st.columns(2)
                     col1.dataframe(result['details_df'].style.format(precision=2, formatter={'Ağırlık': '{:.2%}', 'Bireysel Getiri': '{:+.2%}'}))
                     fig = px.pie(result['holdings'], names='ticker', values='weight', title='Geçmiş Portföy Dağılımı')
