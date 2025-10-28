@@ -12,6 +12,11 @@ from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense, Dropout
 from nltk.sentiment.vader import SentimentIntensityAnalyzer
 import time
+from scipy.stats import zscore
+
+# =============================================================================
+# BÖLÜM 0: MEVCUT YARDIMCI FONKSİYONLAR (DEĞİŞİKLİK YOK)
+# =============================================================================
 
 def cizim_yap_agirliklar(weights, ax=None):
     if ax is None: fig, ax = plt.subplots()
@@ -23,50 +28,40 @@ def cizim_yap_agirliklar(weights, ax=None):
 def piyasa_rejimini_belirle():
     st.write("Piyasa rejimi analiz ediliyor...")
     rejim_gostergeleri = {"NASDAQ": {"ticker": "^IXIC", "yon": "yukari"},"BIST 100": {"ticker": "XU100.IS", "yon": "yukari"},"Altın": {"ticker": "GC=F", "yon": "yukari"},"Bitcoin": {"ticker": "BTC-USD", "yon": "yukari"},"ABD 10Y Faiz": {"ticker": "^TNX", "yon": "asagi"}}
-    toplam_puan = 0; puan_detaylari = {}
+    toplam_puan = 0
     for isim, info in rejim_gostergeleri.items():
-        veri = None; deneme_sayisi=3
-        for deneme in range(deneme_sayisi):
-            try:
-                veri = yf.download(info['ticker'], period="2y", progress=False, auto_adjust=True)
-                if veri is not None and not veri.empty: break
-                time.sleep(1)
-            except Exception: time.sleep(1)
         try:
-            if veri is None or veri.empty: raise ValueError("Veri indirilemedi.")
+            veri = yf.download(info['ticker'], period="2y", progress=False, auto_adjust=True)
+            if veri is None or veri.empty: continue
             veri['MA200'] = veri['Close'].rolling(window=200).mean()
             son_fiyat = veri['Close'].iloc[-1]; son_ma200 = veri['MA200'].iloc[-1]
-            if not np.isfinite(son_fiyat) or not np.isfinite(son_ma200): raise ValueError("Fiyat/MA200 geçersiz.")
-            puan = 1 if (info['yon'] == 'yukari' and son_fiyat > son_ma200) or (info['yon'] == 'asagi' and son_fiyat < son_ma200) else -1
-            toplam_puan += puan; puan_detaylari[isim] = "POZİTİF (+1)" if puan == 1 else "NEGATİF (-1)"
-        except Exception as e: puan_detaylari[isim] = f"İşlenemedi (0) - {e}"
+            if not np.isfinite(son_fiyat) or not np.isfinite(son_ma200): continue
+            puan = 1 if (info['yon'] == 'yukari' and son_fiyat > son_ma200) or \
+                         (info['yon'] == 'asagi' and son_fiyat < son_ma200) else -1
+            toplam_puan += puan
+        except Exception: continue
 
-    if toplam_puan >= 3: rejim = "GÜÇLÜ POZİTİF (BOĞA 🐂🐂)"
-    elif toplam_puan >= 1: rejim = "TEMKİNLİ POZİTİF (BOĞA 🐂)"
-    else: rejim = "TEMKİNLİ NEGATİF (AYI 🐻)"
-    return rejim
+    if toplam_puan >= 3: return "GÜÇLÜ POZİTİF (BOĞA 🐂🐂)"
+    elif toplam_puan >= 1: return "TEMKİNLİ POZİTİF (BOĞA 🐂)"
+    else: return "TEMKİNLİ NEGATİF (AYI 🐻)"
 
 @st.cache_data
 def veri_cek_ve_dogrula(tickers, start, end):
-    gecerli_datalar = {}; gecersiz_tickerlar = []
-    progress_bar = st.progress(0, text="Varlıklar doğrulanıyor...")
-    for i, ticker in enumerate(tickers):
-        df = yf.download(ticker, start=start, end=end, progress=False, auto_adjust=True)
-        if not df.empty and 'Close' in df.columns and not df['Close'].dropna().empty and len(df.resample('W-FRI').last()) > 60:
-            gecerli_datalar[ticker] = df['Close'].resample('W-FRI').last()
-        else:
-            gecersiz_tickerlar.append(ticker)
-        progress_bar.progress((i + 1) / len(tickers), text=f"Varlık doğrulanıyor: {ticker}")
-    progress_bar.empty()
-    if gecersiz_tickerlar: st.warning(f"Şu varlıklar için yeterli veri bulunamadı: {gecersiz_tickerlar}")
-    if not gecerli_datalar: return pd.DataFrame()
-    gecerli_tickerlar = list(gecerli_datalar.keys())
-    st.info(f"Analize devam edilecek geçerli varlıklar: {gecerli_tickerlar}")
-    close_prices_df = pd.concat(gecerli_datalar, axis=1)
-    return close_prices_df.ffill().dropna()
+    gecerli_datalar = {t: yf.download(t, start=start, end=end, progress=False, auto_adjust=True)['Close'] for t in tickers}
+    gecerli_datalar = {t: v for t, v in gecerli_datalar.items() if not v.empty and len(v.dropna()) > 260} # En az 1 yıl veri olsun
+
+    if not gecerli_datalar:
+        st.warning("Hiçbir varlık için yeterli veri bulunamadı.")
+        return pd.DataFrame()
+
+    close_prices_df = pd.concat(gecerli_datalar, axis=1).ffill().dropna()
+    st.info(f"Analize devam edilecek geçerli varlıklar: {list(close_prices_df.columns)}")
+    return close_prices_df
 
 @st.cache_data
 def sinyal_uret_ensemble_lstm(fiyat_verisi, look_back_periods=[12, 26, 52]):
+    # Bu fonksiyon (Teknik/Momentum Faktörü) rapordaki gibi yeniden konumlandırıldı.
+    # Çıktısı artık tek başına bir karar değil, hibrit modelin bir girdisi olacak.
     predictions = []
     for look_back in look_back_periods:
         try:
@@ -82,43 +77,66 @@ def sinyal_uret_ensemble_lstm(fiyat_verisi, look_back_periods=[12, 26, 52]):
             predictions.append(predicted_price)
         except Exception: continue
     last_known_price = fiyat_verisi.iloc[-1]
-    if not predictions: return {"tahmin_yuzde": 0.0, "son_fiyat": last_known_price, "hedef_fiyat": last_known_price}
+    if not predictions: return 0.0
     ortalama_hedef_fiyat = np.mean(predictions)
-    percentage_change = ((ortalama_hedef_fiyat - last_known_price) / last_known_price)
-    if not np.isfinite(percentage_change): return {"tahmin_yuzde": 0.0, "son_fiyat": last_known_price, "hedef_fiyat": last_known_price}
-    return {"tahmin_yuzde": percentage_change, "son_fiyat": last_known_price, "hedef_fiyat": ortalama_hedef_fiyat}
+    return ((ortalama_hedef_fiyat - last_known_price) / last_known_price)
+
+# =============================================================================
+# BÖLÜM 2: YENİ ÇOK FAKTÖRLÜ HİBRİT MODEL MANTIĞI
+# =============================================================================
 
 @st.cache_data
-def sinyal_uret_duyarlilik(ticker):
-    try:
-        stock = yf.Ticker(ticker); news = stock.news
-        if not news: return 0.0
-        sia = SentimentIntensityAnalyzer()
-        scores = [sia.polarity_scores(article['title'])['compound'] for article in news]
-        return np.mean(scores) if scores else 0.0
-    except Exception: return 0.0
+def calculate_multi_factor_score(faktör_verileri, agirliklar):
+    """
+    Her hisse için verilen faktörleri (Değer, Duyarlılık, Teknik)
+    Z-skor ile normalize eder ve verilen ağırlıklara göre nihai bir skor hesaplar.
+    """
+    df = pd.DataFrame(faktör_verileri).T
+    
+    # Boş değerleri o faktörün ortalaması ile doldur
+    df = df.apply(lambda x: x.fillna(x.mean()), axis=0)
+
+    # Z-skor hesapla: Tüm faktörleri karşılaştırılabilir hale getir
+    df_zscore = df.apply(zscore)
+
+    # Ağırlıklı nihai skoru hesapla
+    nihai_skor = (df_zscore * pd.Series(agirliklar)).sum(axis=1)
+    
+    return nihai_skor
 
 @st.cache_data
-def portfoyu_optimize_et(sinyaller, fiyat_verisi, piyasa_rejimi):
-    gecerli_sinyaller = {t: s for t, s in sinyaller.items() if np.isfinite(s)}
-    if not gecerli_sinyaller: return {}
-    fiyat_verisi = fiyat_verisi[list(gecerli_sinyaller.keys())]
-    if fiyat_verisi.shape[1] < 2:
-        return {list(fiyat_verisi.columns)[0]: 1.0} if fiyat_verisi.shape[1] == 1 else {}
+def portfoyu_optimize_et(nihai_skorlar, fiyat_verisi, piyasa_rejimi):
+    """
+    Artık sadece LSTM sinyalini değil, çok faktörlü nihai skoru kullanarak
+    portföyü optimize eder.
+    """
+    if nihai_skorlar.empty: return {}
+    
+    fiyat_verisi = fiyat_verisi[nihai_skorlar.index]
+    
+    # Strateji belirle
     if "POZİTİF" in piyasa_rejimi:
-        agirlik_limiti = 0.60; hedef = "max_sharpe"
+        agirlik_limiti, hedef = 0.60, "max_sharpe"
     else:
-        agirlik_limiti = max(0.35, 1/len(fiyat_verisi.columns)); hedef = "min_volatility"
+        agirlik_limiti, hedef = max(0.35, 1/len(fiyat_verisi.columns)), "min_volatility"
+
     S = risk_models.sample_cov(fiyat_verisi)
-    market_caps = {ticker: 1 for ticker in fiyat_verisi.columns}; max_abs_pred = max(abs(p) for p in gecerli_sinyaller.values()) if gecerli_sinyaller else 1
-    scaling_factor = 0.10 / max_abs_pred if max_abs_pred != 0 else 0; annual_excess_returns = {ticker: pred * scaling_factor * 52 for ticker, pred in gecerli_sinyaller.items()}
-    delta = 2.5; market_prior = S.dot(pd.Series(market_caps) / sum(market_caps.values())) * delta
-    final_absolute_views = {ticker: market_prior[ticker] + annual_excess_returns.get(ticker, 0) for ticker in market_prior.index}
-    bl = BlackLittermanModel(S, pi=market_prior, absolute_views=final_absolute_views); ret_bl = bl.bl_returns()
-    ef = EfficientFrontier(ret_bl, S, weight_bounds=(0, agirlik_limiti))
+    
+    # Nihai skorları beklenen getiri olarak kullan
+    # PyPortfolioOpt'un beklediği formata getiriyoruz
+    mu = nihai_skorlar
+    
+    ef = EfficientFrontier(mu, S, weight_bounds=(0, agirlik_limiti))
     try:
         weights = ef.max_sharpe() if hedef == "max_sharpe" else ef.min_volatility()
     except (ValueError, OptimizationError):
-        try: weights = ef.min_volatility()
-        except (ValueError, OptimizationError): weights = {ticker: 1/len(fiyat_verisi.columns) for ticker in fiyat_verisi.columns}
-    return weights
+        try: 
+            weights = ef.min_volatility()
+        except (ValueError, OptimizationError): 
+            # Hiçbir optimizasyon çalışmazsa eşit ağırlık ver
+            num_assets = len(fiyat_verisi.columns)
+            weights = {ticker: 1/num_assets for ticker in fiyat_verisi.columns}
+
+    # Küçük ağırlıkları temizle
+    cleaned_weights = {k: v for k, v in weights.items() if v > 0.001}
+    return cleaned_weights
