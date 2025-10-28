@@ -26,7 +26,8 @@ def check_password():
 
 # Önbellekleme kaldırıldı, böylece her zaman en güncel listeyi okur.
 def get_tickers_from_github(user, repo, path):
-    url = f"https.raw.githubusercontent.com/{user}/{repo}/main/{path}"
+    # DİKKAT: URL'deki https://https.raw... kısmındaki "https." fazlalığı da kaldırıldı.
+    url = f"https://raw.githubusercontent.com/{user}/{repo}/main/{path}"
     try:
         response = requests.get(url, timeout=10)
         response.raise_for_status()
@@ -46,13 +47,11 @@ def run_analysis(plan_tipi, agirliklar, tickers, yatirim_tutari):
         lstm_detaylari = {} # Detaylı sonuçları saklamak için yeni sözlük
 
         for ticker in fiyatlar.columns:
-            # Plan tipine göre Teknik Faktörü farklılaştırıyoruz
             if plan_tipi == "Haftalık":
                 lstm_data = sinyal_uret_ensemble_lstm(fiyatlar[ticker])
                 teknik_skor = lstm_data["tahmin_yuzde"]
-                lstm_detaylari[ticker] = lstm_data # Haftalık plan için LSTM detaylarını sakla
+                lstm_detaylari[ticker] = lstm_data
             else: # Yıllık Plan
-                # Yıllık plan için teknik sinyal: Son 12 ayın getirisi (Momentum)
                 fiyat_1yil_once = fiyatlar[ticker].iloc[-252] if len(fiyatlar[ticker]) > 252 else fiyatlar[ticker].iloc[0]
                 teknik_skor = (fiyatlar[ticker].iloc[-1] / fiyat_1yil_once) - 1
 
@@ -74,13 +73,11 @@ def run_analysis(plan_tipi, agirliklar, tickers, yatirim_tutari):
             st.success("Analiz Tamamlandı!")
             st.subheader(f"Kişisel {plan_tipi} Yatırım Planı")
             
-            # --- YENİ VE DETAYLI RAPORLAMA BÖLÜMÜ ---
             report_data = []
             toplam_tahmini_deger = 0
             
             for ticker, weight in agirliklar_opt.items():
                 if plan_tipi == "Haftalık":
-                    # Haftalık planda LSTM detaylarını kullan
                     details = lstm_detaylari[ticker]
                     tahmini_hafta_sonu_degeri = (yatirim_tutari * weight) * (1 + details['tahmin_yuzde'])
                     toplam_tahmini_deger += tahmini_hafta_sonu_degeri
@@ -90,10 +87,7 @@ def run_analysis(plan_tipi, agirliklar, tickers, yatirim_tutari):
                         "Beklenti": details['tahmin_yuzde'], "Tahmini Değer ($)": tahmini_hafta_sonu_degeri
                     })
                 else:
-                    # Yıllık planda daha basit bir rapor sun
-                    report_data.append({
-                        "Varlık": ticker, "Ağırlık": weight, "Yatırılacak Miktar ($)": yatirim_tutari * weight,
-                    })
+                    report_data.append({"Varlık": ticker, "Ağırlık": weight, "Yatırılacak Miktar ($)": yatirim_tutari * weight})
 
             report_df = pd.DataFrame(report_data)
             format_dict = {'Ağırlık': '{:.2%}', 'Yatırılacak Miktar ($)': '{:,.2f}'}
@@ -103,7 +97,7 @@ def run_analysis(plan_tipi, agirliklar, tickers, yatirim_tutari):
 
             st.subheader(f"{plan_tipi} Özet")
             col1, col2, col3 = st.columns(3)
-            col1.metric("Başlangıç Sermayesi", f"${yatirim_tutari:,.2f}")
+            col1.metric("Başlangıç Sermeyesi", f"${yatirim_tutari:,.2f}")
             if plan_tipi == "Haftalık" and toplam_tahmini_deger > 0:
                 tahmini_kar_zarar = toplam_tahmini_deger - yatirim_tutari
                 col2.metric("Tahmini Hafta Sonu Değeri", f"${toplam_tahmini_deger:,.2f}")
@@ -119,7 +113,12 @@ st.title("🤖 Kainvest 2.0: Hibrit Finansal Asistan")
 if not check_password(): st.stop()
 
 st.sidebar.success("Giriş Başarılı!")
-tickers = get_tickers_from_github("omeryigitkaya", "kain", "haftanin_varliklari.txt")
+
+# --- DEĞİŞİKLİK BURADA ---
+# Repo adı "kain" yerine "Kainv2" olarak güncellendi.
+tickers = get_tickers_from_github("omeryigitkaya", "Kainv2", "haftanin_varliklari.txt")
+# --- DEĞİŞİKLİK SONU ---
+
 if not tickers: st.error("GitHub'dan varlık listesi alınamadı."); st.stop()
 
 tab1, tab2, tab3 = st.tabs(["Haftalık Portföy", "Yıllık Portföy", "Geçmiş Performans"])
