@@ -6,3 +6,4 @@ transformers
 torch
 torchvision
 streamlit-gsheets-connection
+plotly
