@@ -12,6 +12,14 @@ from sklearn.preprocessing import MinMaxScaler
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense, Dropout
 from scipy.stats import zscore
+import nltk
+from nltk.sentiment.vader import SentimentIntensityAnalyzer
+
+# NLTK VADER modelinin çalışması için gerekli olan bir kerelik indirme işlemi
+try:
+    nltk.data.find('sentiment/vader_lexicon.zip')
+except LookupError:
+    nltk.download('vader_lexicon')
 
 def cizim_yap_agirliklar(weights, ax=None):
     if ax is None: fig, ax = plt.subplots()
@@ -25,14 +33,12 @@ def piyasa_rejimini_belirle():
     rejim_gostergeleri = {"NASDAQ": "^IXIC", "BIST 100": "XU100.IS", "Altın": "GC=F", "Bitcoin": "BTC-USD", "ABD 10Y Faiz": "^TNX"}
     yonler = {"yukari": ["NASDAQ", "BIST 100", "Altın", "Bitcoin"], "asagi": ["ABD 10Y Faiz"]}
     toplam_puan = 0
-    
     for isim, ticker in rejim_gostergeleri.items():
         try:
             veri = yf.download(ticker, period="1y", progress=False, auto_adjust=True)
             if veri.empty: continue
             veri['MA200'] = veri['Close'].rolling(window=200).mean().iloc[-1]
             son_fiyat = veri['Close'].iloc[-1]
-            
             puan = 0
             if isim in yonler['yukari'] and son_fiyat > veri['MA200']: puan = 1
             elif isim in yonler['yukari'] and son_fiyat < veri['MA200']: puan = -1
@@ -40,7 +46,6 @@ def piyasa_rejimini_belirle():
             elif isim in yonler['asagi'] and son_fiyat > veri['MA200']: puan = -1
             toplam_puan += puan
         except Exception: continue
-
     if toplam_puan >= 3: return "GÜÇLÜ POZİTİF (BOĞA 🐂🐂)"
     elif toplam_puan >= 1: return "TEMKİNLİ POZİTİF (BOĞA 🐂)"
     else: return "TEMKİNLİ NEGATİF (AYI 🐻)"
@@ -65,17 +70,14 @@ def sinyal_uret_ensemble_lstm(fiyat_verisi):
             if not X_train: continue
             X_train, y_train = np.array(X_train), np.array(y_train)
             X_train = np.reshape(X_train, (X_train.shape[0], X_train.shape[1], 1))
-            
             model = Sequential([LSTM(50, return_sequences=True, input_shape=(X_train.shape[1], 1)), Dropout(0.2), LSTM(50), Dropout(0.2), Dense(1)])
             model.compile(optimizer='adam', loss='mean_squared_error')
             model.fit(X_train, y_train, epochs=15, batch_size=16, verbose=0)
-            
             X_test = np.array([scaled_data[-look_back:].flatten()])
             X_test = np.reshape(X_test, (X_test.shape[0], X_test.shape[1], 1))
             predicted_price = scaler.inverse_transform(model.predict(X_test, verbose=0))
             predictions.append(predicted_price[0][0])
         except Exception: continue
-    
     if not predictions: return 0.0
     return ((np.mean(predictions) - fiyat_verisi.iloc[-1]) / fiyat_verisi.iloc[-1])
 
@@ -83,23 +85,30 @@ def sinyal_uret_ensemble_lstm(fiyat_verisi):
 def calculate_multi_factor_score(faktör_verileri, agirliklar):
     df = pd.DataFrame(faktör_verileri).T.astype(float)
     df = df.apply(lambda x: x.fillna(x.mean()), axis=0)
-    # Z-skor hesaplarken oluşabilecek sonsuz değerleri sıfırla
-    df_zscore = df.apply(zscore).replace([np.inf, -np.inf], 0)
-    return (df_zscore * pd.Series(agirliklar)).sum(axis=1)
+    
+    # --- DEĞİŞİKLİK BURADA ---
+    # Sıfıra bölme hatasını engellemek için Z-skorunu güvenli bir şekilde hesaplıyoruz.
+    z_scores = {}
+    for col in df.columns:
+        if df[col].std() == 0:
+            z_scores[col] = 0.0 # Eğer standart sapma 0 ise, Z-skoru da 0'dır.
+        else:
+            z_scores[col] = (df[col] - df[col].mean()) / df[col].std()
+    
+    df_zscore = pd.DataFrame(z_scores)
+    # --- DEĞİŞİKLİK SONU ---
+
+    final_scores = (df_zscore * pd.Series(agirliklar)).sum(axis=1)
+    return final_scores.fillna(0) # Olası NaN değerlerini temizle
 
 @st.cache_data
 def portfoyu_optimize_et(nihai_skorlar, fiyat_verisi, piyasa_rejimi):
     if nihai_skorlar.empty: return {}
     
-    # --- DEĞİŞİKLİK BURADA ---
-    # Standart risk modeli yerine, matematiksel olarak daha kararlı olan
-    # Ledoit-Wolf büzülme (shrinkage) modelini kullanıyoruz.
     try:
         S = risk_models.CovarianceShrinkage(fiyat_verisi[nihai_skorlar.index]).ledoit_wolf()
     except Exception:
-        # Eğer Ledoit-Wolf bile hata verirse, en basit modele geri dön.
         S = risk_models.sample_cov(fiyat_verisi[nihai_skorlar.index])
-    # --- DEĞİŞİKLİK SONU ---
 
     mu = nihai_skorlar
     agirlik_limiti = 0.60 if "POZİTİF" in piyasa_rejimi else max(0.35, 1/len(S))
@@ -107,14 +116,11 @@ def portfoyu_optimize_et(nihai_skorlar, fiyat_verisi, piyasa_rejimi):
     ef = EfficientFrontier(mu, S, weight_bounds=(0, agirlik_limiti))
     
     try:
-        # Önce en yüksek Sharpe oranını (risk/getiri) hedefle
         weights = ef.max_sharpe()
     except (ValueError, OptimizationError):
         try: 
-            # Eğer o çalışmazsa, en düşük riski (volatilite) hedefle
             weights = ef.min_volatility()
         except (ValueError, OptimizationError): 
-            # Hiçbiri çalışmazsa, herkese eşit para dağıt :)
             return {ticker: 1/len(S) for ticker in S.columns}
             
     return {k: v for k, v in weights.items() if v > 0.001}
