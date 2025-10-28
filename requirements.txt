@@ -18,6 +18,5 @@ financelib
 transformers
 torch
 torchvision
-streamlit-gsheets-connector
 plotly
 scipy
