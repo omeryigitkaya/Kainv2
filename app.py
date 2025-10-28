@@ -2,14 +2,13 @@
 
 import streamlit as st
 import pandas as pd
-import yfinance as yf
 import requests
 
-# 'persistence' ve 'plotly' ile ilgili her şey kaldırıldı.
 from utils.modeling import (piyasa_rejimini_belirle, veri_cek_ve_dogrula, sinyal_uret_ensemble_lstm,
-                            sinyal_uret_yillik_momentum, calculate_multi_factor_score, 
+                            sinyal_uret_ceyrekli_momentum, calculate_multi_factor_score, 
                             portfoyu_optimize_et, cizim_yap_agirliklar)
-from utils.data_sourcing import get_fundamental_data, get_sentiment_score
+from utils.data_sourcing import get_fundamental_data, get_sentiment_score, varliklari_kesfet
+from utils.persistence import (save_portfolio_to_gsheets, load_all_portfolios_from_gsheets, calculate_pl)
 
 st.set_page_config(layout="wide", page_title="Kainvest 2.0")
 
@@ -48,8 +47,8 @@ def run_analysis(plan_tipi, agirliklar, tickers, yatirim_tutari):
             if plan_tipi == "Haftalık":
                 sinyal_data = sinyal_uret_ensemble_lstm(fiyatlar[ticker])
                 teknik_skor = sinyal_data["tahmin_yuzde"]
-            else: # Yıllık Plan
-                sinyal_data = sinyal_uret_yillik_momentum(fiyatlar[ticker])
+            else: # Çeyreklik Plan
+                sinyal_data = sinyal_uret_ceyrekli_momentum(fiyatlar[ticker])
                 teknik_skor = sinyal_data["tahmin_yuzde"]
             
             sinyal_detaylari[ticker] = sinyal_data
@@ -88,13 +87,14 @@ def run_analysis(plan_tipi, agirliklar, tickers, yatirim_tutari):
 
             st.subheader(f"{plan_tipi} Özet")
             col1, col2, col3 = st.columns(3)
-            col1.metric("Başlangıç Sermayesi", f"${yatirim_tutari:,.2f}")
+            col1.metric("Başlangıç Sermeyesi", f"${yatirim_tutari:,.2f}")
             tahmini_kar_zarar = toplam_tahmini_deger - yatirim_tutari
             col2.metric(f"Tahmini Vade Sonu Değeri", f"${toplam_tahmini_deger:,.2f}")
             col3.metric("Tahmini Kar/Zarar", f"${tahmini_kar_zarar:,.2f}", f"{tahmini_kar_zarar/yatirim_tutari:.2%}")
             
             st.pyplot(cizim_yap_agirliklar(agirliklar_opt))
-            # Portföy kaydetme fonksiyonu çağrısı kaldırıldı.
+            # Geçmiş Performans özelliği kaldırıldığı için bu fonksiyon çağrısı artık yok.
+            # save_portfolio_to_gsheets(plan_tipi, agirliklar_opt, yatirim_tutari) 
         else: st.error("Portföy optimizasyonu başarısız oldu.")
 
 # --- ANA UYGULAMA ---
@@ -102,22 +102,28 @@ st.title("🤖 Kainvest 2.0: Hibrit Finansal Asistan")
 if not check_password(): st.stop()
 
 st.sidebar.success("Giriş Başarılı!")
-tickers = get_tickers_from_github("omeryigitkaya", "Kainv2", "haftanin_varliklari.txt")
-if not tickers: st.error("GitHub'dan varlık listesi alınamadı."); st.stop()
 
-# Artık sadece 2 sekmemiz var
-tab1, tab2 = st.tabs(["Haftalık Portföy", "Yıllık Portföy"])
+tab1, tab2 = st.tabs(["Haftalık Portföy", "Çeyreklik Portföy"])
 
 with tab1:
-    st.header("Haftalık Portföy (Teknik & Duyarlılık Ağırlıklı)")
-    agirliklar = {'teknik_skor': 0.6, 'duyarlilik_skoru': 0.3, 'deger_skoru': 0.1}
-    tutar = st.number_input("Yatırım tutarı (USD):", 100.0, step=100.0, value=1000.0, key="h_tutar")
-    if st.button("Haftalık Analizi Başlat"): run_analysis("Haftalık", agirliklar, tickers, tutar)
+    st.header("Haftalık Portföy (Kısa Vade)")
+    st.info("Bu mod, sizin belirlediğiniz varlık listesi üzerinden kısa vadeli (LSTM) tahminler üretir.")
+    tickers = get_tickers_from_github("omeryigitkaya", "Kainv2", "haftanin_varliklari.txt")
+    if tickers:
+        st.write("Analiz edilecek varlıklar:", tickers)
+        agirliklar = {'teknik_skor': 0.6, 'duyarlilik_skoru': 0.3, 'deger_skoru': 0.1}
+        tutar = st.number_input("Yatırım tutarı (USD):", 100.0, step=100.0, value=1000.0, key="h_tutar")
+        if st.button("Haftalık Analizi Başlat"):
+            run_analysis("Haftalık", agirliklar, tickers, tutar)
+    else:
+        st.error("GitHub'dan varlık listesi alınamadı.")
 
 with tab2:
-    st.header("Yıllık Portföy (Temel Değerleme & Momentum Ağırlıklı)")
+    st.header("Çeyreklik Portföy (Orta Vade)")
+    st.info("Bu mod, BİST, NASDAQ, Kripto ve ETF piyasalarını otomatik tarayarak bulduğu potansiyel varlıklar üzerinden orta vadeli (Momentum) bir portföy önerisi sunar.")
     agirliklar = {'deger_skoru': 0.6, 'teknik_skor': 0.3, 'duyarlilik_skoru': 0.1}
-    tutar = st.number_input("Yatırım tutarı (USD):", 1000.0, step=500.0, value=10000.0, key="y_tutar")
-    if st.button("Yıllık Analizi Başlat"): run_analysis("Yıllık", agirliklar, tickers, tutar)
-
-# Geçmiş Performans sekmesi (tab3) tamamen kaldırıldı.
+    tutar = st.number_input("Yatırım tutarı (USD):", 1000.0, step=500.0, value=10000.0, key="c_tutar")
+    if st.button("Piyasayı Tara ve Çeyreklik Portföy Oluştur"):
+        kesfedilen_varliklar = varliklari_kesfet()
+        if kesfedilen_varliklar:
+            run_analysis("Çeyreklik", agirliklar, kesfedilen_varliklar, tutar)
