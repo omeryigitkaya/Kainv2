@@ -4,13 +4,12 @@ import streamlit as st
 import pandas as pd
 import yfinance as yf
 import requests
-import plotly.express as px
 
+# 'persistence' ve 'plotly' ile ilgili her şey kaldırıldı.
 from utils.modeling import (piyasa_rejimini_belirle, veri_cek_ve_dogrula, sinyal_uret_ensemble_lstm,
                             sinyal_uret_yillik_momentum, calculate_multi_factor_score, 
                             portfoyu_optimize_et, cizim_yap_agirliklar)
 from utils.data_sourcing import get_fundamental_data, get_sentiment_score
-from utils.persistence import (save_portfolio_to_gsheets, load_all_portfolios_from_gsheets, calculate_pl)
 
 st.set_page_config(layout="wide", page_title="Kainvest 2.0")
 
@@ -42,10 +41,9 @@ def run_analysis(plan_tipi, agirliklar, tickers, yatirim_tutari):
         fiyatlar = veri_cek_ve_dogrula(tickers, "2020-01-01", pd.to_datetime("today").strftime('%Y-%m-%d'))
         if fiyatlar.empty: st.error("Analiz için yeterli veri bulunamadı."); return
 
-        faktörler = {}
-        sinyal_detaylari = {} 
-
+        faktörler, sinyal_detaylari = {}, {} 
         progress_bar = st.progress(0, text="Sinyaller üretiliyor...")
+        
         for i, ticker in enumerate(fiyatlar.columns):
             if plan_tipi == "Haftalık":
                 sinyal_data = sinyal_uret_ensemble_lstm(fiyatlar[ticker])
@@ -55,13 +53,11 @@ def run_analysis(plan_tipi, agirliklar, tickers, yatirim_tutari):
                 teknik_skor = sinyal_data["tahmin_yuzde"]
             
             sinyal_detaylari[ticker] = sinyal_data
-            
             deger_data = get_fundamental_data(ticker)
             deger_skoru = (1/deger_data['pe_ratio'] + 1/deger_data['pb_ratio']) / 2 if deger_data.get('pe_ratio') else 0
             
             faktörler[ticker] = {
-                'teknik_skor': teknik_skor,
-                'deger_skoru': deger_skoru,
+                'teknik_skor': teknik_skor, 'deger_skoru': deger_skoru,
                 'duyarlilik_skoru': get_sentiment_score(ticker)
             }
             progress_bar.progress((i + 1) / len(fiyatlar.columns), text=f"Sinyal üretiliyor: {ticker}")
@@ -98,7 +94,7 @@ def run_analysis(plan_tipi, agirliklar, tickers, yatirim_tutari):
             col3.metric("Tahmini Kar/Zarar", f"${tahmini_kar_zarar:,.2f}", f"{tahmini_kar_zarar/yatirim_tutari:.2%}")
             
             st.pyplot(cizim_yap_agirliklar(agirliklar_opt))
-            save_portfolio_to_gsheets(plan_tipi, agirliklar_opt, yatirim_tutari)
+            # Portföy kaydetme fonksiyonu çağrısı kaldırıldı.
         else: st.error("Portföy optimizasyonu başarısız oldu.")
 
 # --- ANA UYGULAMA ---
@@ -109,7 +105,8 @@ st.sidebar.success("Giriş Başarılı!")
 tickers = get_tickers_from_github("omeryigitkaya", "Kainv2", "haftanin_varliklari.txt")
 if not tickers: st.error("GitHub'dan varlık listesi alınamadı."); st.stop()
 
-tab1, tab2, tab3 = st.tabs(["Haftalık Portföy", "Yıllık Portföy", "Geçmiş Performans"])
+# Artık sadece 2 sekmemiz var
+tab1, tab2 = st.tabs(["Haftalık Portföy", "Yıllık Portföy"])
 
 with tab1:
     st.header("Haftalık Portföy (Teknik & Duyarlılık Ağırlıklı)")
@@ -123,22 +120,4 @@ with tab2:
     tutar = st.number_input("Yatırım tutarı (USD):", 1000.0, step=500.0, value=10000.0, key="y_tutar")
     if st.button("Yıllık Analizi Başlat"): run_analysis("Yıllık", agirliklar, tickers, tutar)
 
-with tab3:
-    st.header("Geçmiş Portföy Performansı (K/Z)")
-    portfolios = load_all_portfolios_from_gsheets()
-    if not portfolios.empty:
-        portfolios['display'] = portfolios.apply(lambda r: f"{r['created_timestamp'].strftime('%d-%m-%Y %H:%M')} - {r['plan_type']}", axis=1)
-        portfolios = portfolios.sort_values('created_timestamp', ascending=False)
-        option = st.selectbox('İncelenecek portföyü seçin:', portfolios['display'], label_visibility="collapsed")
-        if option:
-            selected_id = portfolios[portfolios['display'] == option]['portfolio_id'].iloc[0]
-            with st.spinner("Performans hesaplanıyor..."):
-                result = calculate_pl(selected_id)
-                if result:
-                    st.metric("Portföyün Toplam Getirisi", f"{result['total_return']:.2%}")
-                    col1, col2 = st.columns(2)
-                    col1.dataframe(result['details_df'].style.format(precision=2, formatter={'Ağırlık': '{:.2%}', 'Bireysel Getiri': '{:+.2%}'}))
-                    fig = px.pie(result['holdings'], names='ticker', values='weight', title='Geçmiş Portföy Dağılımı')
-                    col2.plotly_chart(fig, use_container_width=True)
-    else:
-        st.info("Görüntülenecek kaydedilmiş portföy bulunmuyor.")
+# Geçmiş Performans sekmesi (tab3) tamamen kaldırıldı.
