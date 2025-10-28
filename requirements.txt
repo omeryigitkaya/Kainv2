@@ -5,3 +5,4 @@ financelib
 transformers
 torch
 torchvision
+streamlit-gsheets-connection
