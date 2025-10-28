@@ -66,22 +66,19 @@ def sinyal_uret_ensemble_lstm(fiyat_verisi):
             predictions.append(predicted_price[0][0])
         except Exception: continue
     last_known_price = fiyat_verisi.iloc[-1]
-    if not predictions:
-        return {"tahmin_yuzde": 0.0, "son_fiyat": last_known_price, "hedef_fiyat": last_known_price}
+    if not predictions: return {"tahmin_yuzde": 0.0, "son_fiyat": last_known_price, "hedef_fiyat": last_known_price}
     ortalama_hedef_fiyat = np.mean(predictions)
     percentage_change = (ortalama_hedef_fiyat - last_known_price) / last_known_price
     return {"tahmin_yuzde": percentage_change, "son_fiyat": last_known_price, "hedef_fiyat": ortalama_hedef_fiyat}
 
-# Yıllık plan için yeni fonksiyon
 @st.cache_data
-def sinyal_uret_yillik_momentum(fiyat_serisi):
+def sinyal_uret_ceyrekli_momentum(fiyat_serisi):
     son_fiyat = fiyat_serisi.iloc[-1]
-    # Son 1 yıllık (yaklaşık 252 işlem günü) performansı hesapla
-    fiyat_1yil_once = fiyat_serisi.iloc[-252] if len(fiyat_serisi) > 252 else fiyat_serisi.iloc[0]
-    yillik_getiri = (son_fiyat / fiyat_1yil_once) - 1
-    # Bu getiriyi bir yıl sonrasına hedef olarak yansıt
-    hedef_fiyat = son_fiyat * (1 + yillik_getiri)
-    return {"tahmin_yuzde": yillik_getiri, "son_fiyat": son_fiyat, "hedef_fiyat": hedef_fiyat}
+    # Son 6 aylık (yaklaşık 126 işlem günü) performansı hesapla
+    fiyat_6ay_once = fiyat_serisi.iloc[-126] if len(fiyat_serisi) > 126 else fiyat_serisi.iloc[0]
+    ceyrekli_getiri = (son_fiyat / fiyat_6ay_once) - 1
+    hedef_fiyat = son_fiyat * (1 + ceyrekli_getiri)
+    return {"tahmin_yuzde": ceyrekli_getiri, "son_fiyat": son_fiyat, "hedef_fiyat": hedef_fiyat}
 
 @st.cache_data
 def calculate_multi_factor_score(faktör_verileri, agirliklar):
