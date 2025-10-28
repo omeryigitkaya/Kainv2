@@ -1,9 +1,23 @@
-beautifulsoup4
-lxml
+# requirements.txt
+
+streamlit
+pandas
+numpy==1.23.5
+yfinance
+PyPortfolioOpt
+scikit-learn==1.2.2
+tensorflow-cpu==2.12.0
+nltk
 requests
+beautifulsoup4
+PyYAML
+matplotlib
+seaborn
+lxml
 financelib
 transformers
 torch
 torchvision
 streamlit-gsheets-connection
 plotly
+scipy
