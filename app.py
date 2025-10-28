@@ -2,13 +2,14 @@
 
 import streamlit as st
 import pandas as pd
+import yfinance as yf
 import requests
 
+# 'persistence' and 'plotly' ile ilgili her şey kaldırıldı.
 from utils.modeling import (piyasa_rejimini_belirle, veri_cek_ve_dogrula, sinyal_uret_ensemble_lstm,
-                            sinyal_uret_ceyrekli_momentum, calculate_multi_factor_score, 
+                            sinyal_uret_ceyrekli_momentum, calculate_multi_factor_score,
                             portfoyu_optimize_et, cizim_yap_agirliklar)
 from utils.data_sourcing import get_fundamental_data, get_sentiment_score, varliklari_kesfet
-from utils.persistence import (save_portfolio_to_gsheets, load_all_portfolios_from_gsheets, calculate_pl)
 
 st.set_page_config(layout="wide", page_title="Kainvest 2.0")
 
@@ -40,7 +41,7 @@ def run_analysis(plan_tipi, agirliklar, tickers, yatirim_tutari):
         fiyatlar = veri_cek_ve_dogrula(tickers, "2020-01-01", pd.to_datetime("today").strftime('%Y-%m-%d'))
         if fiyatlar.empty: st.error("Analiz için yeterli veri bulunamadı."); return
 
-        faktörler, sinyal_detaylari = {}, {} 
+        faktörler, sinyal_detaylari = {}, {}
         progress_bar = st.progress(0, text="Sinyaller üretiliyor...")
         
         for i, ticker in enumerate(fiyatlar.columns):
@@ -81,7 +82,7 @@ def run_analysis(plan_tipi, agirliklar, tickers, yatirim_tutari):
                 })
 
             report_df = pd.DataFrame(report_data)
-            format_dict = {'Ağırlık': '{:.2%}', 'Yatırılacak Miktar ($)': '{:,.2f}', 'Alım Fiyatı': '{:.2f}', 
+            format_dict = {'Ağırlık': '{:.2%}', 'Yatırılacak Miktar ($)': '{:,.2f}', 'Alım Fiyatı': '{:.2f}',
                            'Hedef Fiyat': '{:.2f}', 'Beklenti': '{:+.2%}', 'Tahmini Değer ($)': '{:,.2f}'}
             st.dataframe(report_df.style.format(format_dict))
 
@@ -93,8 +94,6 @@ def run_analysis(plan_tipi, agirliklar, tickers, yatirim_tutari):
             col3.metric("Tahmini Kar/Zarar", f"${tahmini_kar_zarar:,.2f}", f"{tahmini_kar_zarar/yatirim_tutari:.2%}")
             
             st.pyplot(cizim_yap_agirliklar(agirliklar_opt))
-            # Geçmiş Performans özelliği kaldırıldığı için bu fonksiyon çağrısı artık yok.
-            # save_portfolio_to_gsheets(plan_tipi, agirliklar_opt, yatirim_tutari) 
         else: st.error("Portföy optimizasyonu başarısız oldu.")
 
 # --- ANA UYGULAMA ---
