@@ -4,7 +4,7 @@ import streamlit as st
 import yfinance as yf
 import requests
 from bs4 import BeautifulSoup
-from financelib.stocks import Stocks
+# financelib kaldırıldı, onun yerine yfinance kullanılacak
 from transformers import pipeline, logging as hf_logging
 
 # transformers kütüphanesinin çok fazla uyarı mesajı basmasını engelle
@@ -47,11 +47,13 @@ def load_sentiment_model():
 @st.cache_data(ttl=3600) # 1 saat önbellekle
 def get_sentiment_score(ticker):
     try:
-        stock_name = ticker.split('.')[0]
-        news = Stocks(stock_name, "turkey").get_news()
+        # Haber kaynağı olarak financelib yerine yfinance kullanıyoruz.
+        stock = yf.Ticker(ticker)
+        news = stock.news
         if not news: return 0.0
         
-        headlines = [n['title'] for n in news if 'title' in n and n['title']]
+        # yfinance'den gelen haberlerin başlıklarını alıyoruz
+        headlines = [article['title'] for article in news if 'title' in article and article['title']]
         if not headlines: return 0.0
 
         model = load_sentiment_model()
