@@ -12,7 +12,6 @@ from sklearn.preprocessing import MinMaxScaler
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense, Dropout
 from scipy.stats import zscore
-import time
 
 def cizim_yap_agirliklar(weights, ax=None):
     if ax is None: fig, ax = plt.subplots()
@@ -84,23 +83,38 @@ def sinyal_uret_ensemble_lstm(fiyat_verisi):
 def calculate_multi_factor_score(faktör_verileri, agirliklar):
     df = pd.DataFrame(faktör_verileri).T.astype(float)
     df = df.apply(lambda x: x.fillna(x.mean()), axis=0)
-    df_zscore = df.apply(zscore)
+    # Z-skor hesaplarken oluşabilecek sonsuz değerleri sıfırla
+    df_zscore = df.apply(zscore).replace([np.inf, -np.inf], 0)
     return (df_zscore * pd.Series(agirliklar)).sum(axis=1)
 
 @st.cache_data
 def portfoyu_optimize_et(nihai_skorlar, fiyat_verisi, piyasa_rejimi):
     if nihai_skorlar.empty: return {}
     
-    mu, S = nihai_skorlar, risk_models.sample_cov(fiyat_verisi[nihai_skorlar.index])
+    # --- DEĞİŞİKLİK BURADA ---
+    # Standart risk modeli yerine, matematiksel olarak daha kararlı olan
+    # Ledoit-Wolf büzülme (shrinkage) modelini kullanıyoruz.
+    try:
+        S = risk_models.CovarianceShrinkage(fiyat_verisi[nihai_skorlar.index]).ledoit_wolf()
+    except Exception:
+        # Eğer Ledoit-Wolf bile hata verirse, en basit modele geri dön.
+        S = risk_models.sample_cov(fiyat_verisi[nihai_skorlar.index])
+    # --- DEĞİŞİKLİK SONU ---
+
+    mu = nihai_skorlar
     agirlik_limiti = 0.60 if "POZİTİF" in piyasa_rejimi else max(0.35, 1/len(S))
     
     ef = EfficientFrontier(mu, S, weight_bounds=(0, agirlik_limiti))
+    
     try:
+        # Önce en yüksek Sharpe oranını (risk/getiri) hedefle
         weights = ef.max_sharpe()
     except (ValueError, OptimizationError):
         try: 
+            # Eğer o çalışmazsa, en düşük riski (volatilite) hedefle
             weights = ef.min_volatility()
         except (ValueError, OptimizationError): 
+            # Hiçbiri çalışmazsa, herkese eşit para dağıt :)
             return {ticker: 1/len(S) for ticker in S.columns}
             
     return {k: v for k, v in weights.items() if v > 0.001}
