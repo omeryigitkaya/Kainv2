@@ -9,14 +9,6 @@ from pypfopt import risk_models, EfficientFrontier, exceptions
 from sklearn.preprocessing import MinMaxScaler
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense, Dropout
-import nltk
-from nltk.sentiment.vader import SentimentIntensityAnalyzer
-
-# NLTK VADER modelinin çalışması için gerekli olan bir kerelik indirme işlemi
-try:
-    nltk.data.find('sentiment/vader_lexicon.zip')
-except LookupError:
-    nltk.download('vader_lexicon')
 
 def cizim_yap_agirliklar(weights, ax=None):
     if ax is None: fig, ax = plt.subplots()
@@ -57,7 +49,8 @@ def veri_cek_ve_dogrula(tickers, start, end):
 @st.cache_data
 def sinyal_uret_ensemble_lstm(fiyat_verisi):
     predictions = []
-    for look_back in [12, 26]: # Reduced for speed
+    # Daha hızlı çalışması için look_back periyotları ve epoch sayısı azaltıldı
+    for look_back in [12, 26]:
         try:
             scaler = MinMaxScaler(feature_range=(0, 1))
             scaled_data = scaler.fit_transform(fiyat_verisi.values.reshape(-1, 1))
@@ -73,8 +66,14 @@ def sinyal_uret_ensemble_lstm(fiyat_verisi):
             predicted_price = scaler.inverse_transform(model.predict(X_test, verbose=0))
             predictions.append(predicted_price[0][0])
         except Exception: continue
-    if not predictions: return 0.0
-    return ((np.mean(predictions) - fiyat_verisi.iloc[-1]) / fiyat_verisi.iloc[-1])
+    
+    last_known_price = fiyat_verisi.iloc[-1]
+    if not predictions:
+        return {"tahmin_yuzde": 0.0, "son_fiyat": last_known_price, "hedef_fiyat": last_known_price}
+    
+    ortalama_hedef_fiyat = np.mean(predictions)
+    percentage_change = (ortalama_hedef_fiyat - last_known_price) / last_known_price
+    return {"tahmin_yuzde": percentage_change, "son_fiyat": last_known_price, "hedef_fiyat": ortalama_hedef_fiyat}
 
 @st.cache_data
 def calculate_multi_factor_score(faktör_verileri, agirliklar):
@@ -92,7 +91,6 @@ def calculate_multi_factor_score(faktör_verileri, agirliklar):
 
 @st.cache_data
 def portfoyu_optimize_et(nihai_skorlar, fiyat_verisi, piyasa_rejimi):
-    # Failsafe 1: If scores are meaningless, return an equal-weight portfolio.
     if nihai_skorlar.empty or nihai_skorlar.std() == 0:
         st.warning("Sinyaller anlamsız veya tekdüze. Varlıklar eşit olarak dağıtılacak.")
         num_assets = len(fiyat_verisi.columns)
@@ -100,22 +98,16 @@ def portfoyu_optimize_et(nihai_skorlar, fiyat_verisi, piyasa_rejimi):
 
     mu = nihai_skorlar
     S = risk_models.CovarianceShrinkage(fiyat_verisi[mu.index]).ledoit_wolf()
-    
-    ef = EfficientFrontier(mu, S, weight_bounds=(0, 1)) # Looser bounds initially
+    ef = EfficientFrontier(mu, S, weight_bounds=(0, 1))
     
     try:
-        # Failsafe 2: Try different optimizers. Start with the most robust.
-        # This objective function is less prone to the InstantiationError
         weights = ef.max_quadratic_utility()
     except (exceptions.InstantiationError, ValueError):
         try:
             weights = ef.min_volatility()
         except (exceptions.InstantiationError, ValueError):
-            # Failsafe 3: If all else fails, return an equal-weight portfolio.
             st.warning("Optimizasyon başarısız oldu. Varlıklar eşit olarak dağıtılacak.")
             num_assets = len(fiyat_verisi.columns)
             return {ticker: 1/num_assets for ticker in fiyat_verisi.columns}
     
-    # Clean the final weights to remove dust and ensure they sum to 1.
-    cleaned_weights = ef.clean_weights()
-    return cleaned_weights
+    return ef.clean_weights()
