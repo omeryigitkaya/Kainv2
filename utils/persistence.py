@@ -3,17 +3,22 @@
 import streamlit as st
 import pandas as pd
 import yfinance as yf
-from streamlit_gsheets import GSheetsConnection
 import uuid
 from datetime import datetime
 
+# st.connection yerleşik olduğu için harici kütüphaneye gerek kalmadı
+
 def save_portfolio_to_gsheets(plan_tipi, optimal_agirliklar, yatirim_tutari):
     try:
-        conn = st.connection("gsheets", type=GSheetsConnection)
-        portfolio_id = str(uuid.uuid4())
-        
-        portfolio_history_data = pd.DataFrame([{"portfolio_id": portfolio_id, "created_timestamp": datetime.now(), "plan_type": plan_tipi, "initial_investment": yatirim_tutari}])
+        # Streamlit'in yerleşik gsheets bağlantısını kullanıyoruz
+        conn = st.connection("gsheets", type="sheets")
 
+        portfolio_id = str(uuid.uuid4())
+        created_time = datetime.now()
+
+        # Yeni satırları DataFrame olarak hazırlıyoruz
+        history_df = pd.DataFrame([{"portfolio_id": portfolio_id, "created_timestamp": created_time, "plan_type": plan_tipi, "initial_investment": yatirim_tutari}])
+        
         tickers_list = list(optimal_agirliklar.keys())
         prices_df = yf.download(tickers_list, period="1d", progress=False, auto_adjust=True)
         current_prices = prices_df['Close'].iloc[-1] if isinstance(prices_df['Close'], pd.Series) else prices_df['Close']
@@ -26,19 +31,28 @@ def save_portfolio_to_gsheets(plan_tipi, optimal_agirliklar, yatirim_tutari):
         
         if not holdings_data:
             st.warning("Hisse fiyatları alınamadığı için portföy kaydedilemedi."); return False
+        
+        holdings_df = pd.DataFrame(holdings_data)
 
-        conn.update(worksheet="portfolio_history", data=portfolio_history_data)
-        conn.update(worksheet="portfolio_holdings", data=pd.DataFrame(holdings_data))
+        # Mevcut veriyi okuyup yenisini ekliyoruz
+        existing_history = conn.read(worksheet="portfolio_history", usecols=list(range(4)))
+        updated_history = pd.concat([existing_history, history_df], ignore_index=True)
+        conn.write(worksheet="portfolio_history", data=updated_history)
+
+        existing_holdings = conn.read(worksheet="portfolio_holdings", usecols=list(range(5)))
+        updated_holdings = pd.concat([existing_holdings, holdings_df], ignore_index=True)
+        conn.write(worksheet="portfolio_holdings", data=updated_holdings)
+
         st.success(f"{plan_tipi} portföy önerisi başarıyla kaydedildi!")
         return True
     except Exception as e:
-        st.error(f"Portföy kaydedilemedi. Google Sheets API ayarlarınızı kontrol edin. Hata: {e}"); return False
+        st.error(f"Portföy kaydedilemedi. Secrets veya Google Sheets API ayarlarınızı kontrol edin. Hata: {e}"); return False
 
 @st.cache_data(ttl=900)
 def load_all_portfolios_from_gsheets():
     try:
-        conn = st.connection("gsheets", type=GSheetsConnection)
-        portfolios = conn.read(worksheet="portfolio_history", usecols=list(range(4)), header=0)
+        conn = st.connection("gsheets", type="sheets")
+        portfolios = conn.read(worksheet="portfolio_history", usecols=list(range(4)))
         portfolios['created_timestamp'] = pd.to_datetime(portfolios['created_timestamp'])
         return portfolios.dropna(subset=['portfolio_id'])
     except Exception:
@@ -47,8 +61,8 @@ def load_all_portfolios_from_gsheets():
 @st.cache_data(ttl=900)
 def calculate_pl(selected_portfolio_id):
     try:
-        conn = st.connection("gsheets", type=GSheetsConnection)
-        all_holdings = conn.read(worksheet="portfolio_holdings", usecols=list(range(5)), header=0)
+        conn = st.connection("gsheets", type="sheets")
+        all_holdings = conn.read(worksheet="portfolio_holdings", usecols=list(range(5)))
         portfolio_holdings = all_holdings[all_holdings['portfolio_id'] == selected_portfolio_id]
         if portfolio_holdings.empty: return None
 
