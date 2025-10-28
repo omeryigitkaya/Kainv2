@@ -4,17 +4,23 @@ import streamlit as st
 import yfinance as yf
 import requests
 from bs4 import BeautifulSoup
-# financelib kaldırıldı, onun yerine yfinance kullanılacak
-from transformers import pipeline, logging as hf_logging
+# Gelişmiş ve sadece Türkçe bilen model yerine, evrensel NLTK VADER modelini kullanıyoruz.
+from nltk.sentiment.vader import SentimentIntensityAnalyzer
+import nltk
 
-# transformers kütüphanesinin çok fazla uyarı mesajı basmasını engelle
-hf_logging.set_verbosity_error()
+# NLTK VADER modelinin çalışması için gerekli olan bir kerelik indirme işlemi
+# Streamlit Cloud'da her zaman çalışacaktır.
+try:
+    nltk.data.find('sentiment/vader_lexicon.zip')
+except LookupError:
+    nltk.download('vader_lexicon')
 
 # =============================================================================
 # BÖLÜM 1.1: TEMEL ANALİZ VERİLERİ (FA)
 # =============================================================================
-@st.cache_data(ttl=86400) # 24 saat önbellekle
+@st.cache_data(ttl=86400)
 def get_fundamental_data(ticker):
+    # Amerikan hisseleri için yfinance genellikle yeterlidir.
     try:
         stock_info = yf.Ticker(ticker).info
         pe_ratio = stock_info.get('trailingPE')
@@ -24,48 +30,44 @@ def get_fundamental_data(ticker):
     except Exception:
         pass
 
-    try:
-        url = f"https://www.isyatirim.com.tr/tr-tr/analiz/hisse/Sayfalar/sirket-karti.aspx?hisse={ticker.split('.')[0]}"
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        response = requests.get(url, headers=headers, timeout=10)
-        response.raise_for_status()
-        soup = BeautifulSoup(response.content, 'lxml')
-        pe_value = soup.find(id='ctl00_ctl58_g_8628006e_4f1d_4296_8823_9997c48f8859_ctl00_MevcutF_K').text.strip()
-        pb_value = soup.find(id='ctl00_ctl58_g_8628006e_4f1d_4296_8823_9997c48f8859_ctl00_MevcutPD_DD').text.strip()
-        return {'pe_ratio': float(pe_value.replace(',', '.')), 'pb_ratio': float(pb_value.replace(',', '.'))}
-    except Exception:
-        st.warning(f"{ticker} için temel veriler alınamadı.")
-        return {'pe_ratio': None, 'pb_ratio': None}
+    # Sadece BİST hisseleri için yedek strateji (Amerikan hisselerinde hata verecek ve atlanacak)
+    if '.IS' in ticker:
+        try:
+            url = f"https.isyatirim.com.tr/tr-tr/analiz/hisse/Sayfalar/sirket-karti.aspx?hisse={ticker.split('.')[0]}"
+            headers = {'User-Agent': 'Mozilla/5.0'}
+            response = requests.get(url, headers=headers, timeout=10)
+            soup = BeautifulSoup(response.content, 'lxml')
+            pe_value = soup.find(id='ctl00_ctl58_g_8628006e_4f1d_4296_8823_9997c48f8859_ctl00_MevcutF_K').text.strip()
+            pb_value = soup.find(id='ctl00_ctl58_g_8628006e_4f1d_4296_8823_9997c48f8859_ctl00_MevcutPD_DD').text.strip()
+            return {'pe_ratio': float(pe_value.replace(',', '.')), 'pb_ratio': float(pb_value.replace(',', '.'))}
+        except Exception:
+            pass # Hata olursa görmezden gel, aşağıda None dönecek.
+
+    return {'pe_ratio': None, 'pb_ratio': None}
 
 # =============================================================================
-# BÖLÜM 1.2: DUYARLILIK ANALİZİ VERİLERİ (SA)
+# BÖLÜM 1.2: DUYARLILIK ANALİZİ VERİLERİ (SA) - EVRENSEL MODEL
 # =============================================================================
 @st.cache_resource
-def load_sentiment_model():
-    return pipeline("sentiment-analysis", model="savasy/bert-base-turkish-sentiment-cased", max_length=512, truncation=True)
+def load_sentiment_analyzer():
+    return SentimentIntensityAnalyzer()
 
-@st.cache_data(ttl=3600) # 1 saat önbellekle
+@st.cache_data(ttl=3600)
 def get_sentiment_score(ticker):
     try:
-        # Haber kaynağı olarak financelib yerine yfinance kullanıyoruz.
         stock = yf.Ticker(ticker)
         news = stock.news
         if not news: return 0.0
         
-        # yfinance'den gelen haberlerin başlıklarını alıyoruz
         headlines = [article['title'] for article in news if 'title' in article and article['title']]
         if not headlines: return 0.0
 
-        model = load_sentiment_model()
-        results = model(headlines)
+        sia = load_sentiment_analyzer()
         
-        score = 0
-        for res in results:
-            if res['label'].lower() in ['positive', '4 stars', '5 stars']:
-                score += res['score']
-            elif res['label'].lower() in ['negative', '1 star', '2 stars']:
-                score -= res['score']
-        return score / len(results) if results else 0.0
+        # Her başlığın 'compound' skorunu al ve ortalamasını hesapla
+        scores = [sia.polarity_scores(headline)['compound'] for headline in headlines]
+        
+        return sum(scores) / len(scores) if scores else 0.0
     except Exception:
         st.warning(f"{ticker} için duyarlılık analizi yapılamadı.")
         return 0.0
