@@ -57,45 +57,62 @@ def get_sentiment_score(ticker):
         return 0.0
 
 @st.cache_data(ttl=86400)
-def varliklari_kesfet(max_varlik_sayisi=20):
+def varliklari_kesfet():
     with st.spinner("Piyasalar taranıyor ve potansiyel varlıklar keşfediliyor..."):
         aday_varliklar = []
-        # --- DEĞİŞİKLİK BURADA: Wikipedia'ya tarayıcı gibi görüneceğiz ---
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
 
-        # 1. BİST Taraması
+        # --- BİST TARAMASI (NİHAİ VE GÜVENLİ YÖNTEM) ---
         try:
-            bist100_url = "https://tr.wikipedia.org/wiki/BIST_100"
-            response = requests.get(bist100_url, headers=headers)
-            bist_tablolari = pd.read_html(response.content)
-            bist100_df = bist_tablolari[1]
-            bist100_tickerlar = [f"{ticker}.IS" for ticker in bist100_df['Kod'].str.strip()]
-            
+            # Birincil Kaynak: İş Yatırım'dan BIST100 listesini çekmeyi dene
+            is_yatirim_url = "https://www.isyatirim.com.tr/tr-tr/analiz/hisse/Sayfalar/hisse-onerileri.aspx"
+            response = requests.get(is_yatirim_url, headers=headers)
+            tables = pd.read_html(response.content)
+            # Genellikle "Öneri Listesi" tablosu
+            bist_df = tables[0] 
+            # 'Kod' sütununu al ve .IS ekle
+            bist100_tickerlar = [f"{ticker}.IS" for ticker in bist_df['Kod'].str.strip()]
+        except Exception:
+            st.warning("BİST hisse listesi finans sitesinden çekilemedi. Acil durum listesi kullanılıyor.")
+            # Acil Durum Failsafe Listesi (Eğer yukarıdaki yöntem çalışmazsa bu liste devreye girer)
+            bist100_tickerlar = [
+                "AKBNK.IS", "ARCLK.IS", "ASELS.IS", "BIMAS.IS", "EKGYO.IS", "ENKAI.IS", "EREGL.IS",
+                "FROTO.IS", "GARAN.IS", "GUBRF.IS", "HALKB.IS", "ISCTR.IS", "KCHOL.IS", "KOZAL.IS",
+                "KRDMD.IS", "MGROS.IS", "PETKM.IS", "PGSUS.IS", "SAHOL.IS", "SASA.IS", "SISE.IS",
+                "TAVHL.IS", "TCELL.IS", "THYAO.IS", "TOASO.IS", "TTKOM.IS", "TUPRS.IS", "ULKER.IS",
+                "VAKBN.IS", "YKBNK.IS", "SMRTG.IS", "HEKTS.IS", "TUPRS.IS", "EREGL.IS", "KRDMD.IS",
+                "ASTOR.IS", "KONTR.IS", "GESAN.IS", "CWENE.IS", "ENERY.IS"
+            ]
+
+        try:
             bist_skorlari = {}
-            for ticker in bist100_tickerlar[:30]:
+            for ticker in bist100_tickerlar:
                 fa = get_fundamental_data(ticker)
                 if fa and fa.get('pe_ratio') and fa.get('pb_ratio'):
                     bist_skorlari[ticker] = (1/fa['pe_ratio']) + (1/fa['pb_ratio'])
-            
             en_iyi_bist = sorted(bist_skorlari, key=bist_skorlari.get, reverse=True)[:5]
             aday_varliklar.extend(en_iyi_bist)
         except Exception as e:
-            st.warning(f"BİST taraması başarısız oldu: {e}")
-
-        # 2. NASDAQ Taraması
+            st.warning(f"BİST taraması temel analiz aşamasında başarısız oldu: {e}")
+            
+        # --- NASDAQ TARAMASI (NİHAİ VE GÜVENLİ YÖNTEM) ---
         try:
             nasdaq100_url = "https://en.wikipedia.org/wiki/NASDAQ-100"
             response = requests.get(nasdaq100_url, headers=headers)
             nasdaq_tablolari = pd.read_html(response.content)
-            nasdaq100_df = nasdaq_tablolari[4]
+            nasdaq100_df = None
+            for table in nasdaq_tablolari:
+                if 'Ticker' in table.columns and 'Company' in table.columns:
+                    nasdaq100_df = table
+                    break
+            if nasdaq100_df is None: raise ValueError("NASDAQ-100 tablosu bulunamadı.")
+            
             nasdaq100_tickerlar = nasdaq100_df['Ticker'].str.strip().tolist()
-
             nasdaq_skorlari = {}
-            for ticker in nasdaq100_tickerlar[:30]:
+            for ticker in nasdaq100_tickerlar[:50]: # API limitlerini zorlamamak için 50'ye çıkarıldı
                 fa = get_fundamental_data(ticker)
                 if fa and fa.get('pe_ratio') and fa.get('pb_ratio'):
                     nasdaq_skorlari[ticker] = (1/fa['pe_ratio']) + (1/fa['pb_ratio'])
-            
             en_iyi_nasdaq = sorted(nasdaq_skorlari, key=nasdaq_skorlari.get, reverse=True)[:5]
             aday_varliklar.extend(en_iyi_nasdaq)
         except Exception as e:
@@ -106,6 +123,10 @@ def varliklari_kesfet(max_varlik_sayisi=20):
         aday_varliklar.extend(["SPY", "QQQ", "GLD", "USO", "IEMG"])
 
         son_liste = list(set(aday_varliklar))
+        if not son_liste:
+            st.error("Piyasa taraması sonucunda hiçbir uygun varlık bulunamadı.")
+            return []
+            
         st.success(f"{len(son_liste)} potansiyel varlık keşfedildi!")
         st.json(son_liste)
         return son_liste
