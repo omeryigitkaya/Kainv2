@@ -49,7 +49,6 @@ def veri_cek_ve_dogrula(tickers, start, end):
 @st.cache_data
 def sinyal_uret_ensemble_lstm(fiyat_verisi):
     predictions = []
-    # Daha hızlı çalışması için look_back periyotları ve epoch sayısı azaltıldı
     for look_back in [12, 26]:
         try:
             scaler = MinMaxScaler(feature_range=(0, 1))
@@ -66,14 +65,23 @@ def sinyal_uret_ensemble_lstm(fiyat_verisi):
             predicted_price = scaler.inverse_transform(model.predict(X_test, verbose=0))
             predictions.append(predicted_price[0][0])
         except Exception: continue
-    
     last_known_price = fiyat_verisi.iloc[-1]
     if not predictions:
         return {"tahmin_yuzde": 0.0, "son_fiyat": last_known_price, "hedef_fiyat": last_known_price}
-    
     ortalama_hedef_fiyat = np.mean(predictions)
     percentage_change = (ortalama_hedef_fiyat - last_known_price) / last_known_price
     return {"tahmin_yuzde": percentage_change, "son_fiyat": last_known_price, "hedef_fiyat": ortalama_hedef_fiyat}
+
+# Yıllık plan için yeni fonksiyon
+@st.cache_data
+def sinyal_uret_yillik_momentum(fiyat_serisi):
+    son_fiyat = fiyat_serisi.iloc[-1]
+    # Son 1 yıllık (yaklaşık 252 işlem günü) performansı hesapla
+    fiyat_1yil_once = fiyat_serisi.iloc[-252] if len(fiyat_serisi) > 252 else fiyat_serisi.iloc[0]
+    yillik_getiri = (son_fiyat / fiyat_1yil_once) - 1
+    # Bu getiriyi bir yıl sonrasına hedef olarak yansıt
+    hedef_fiyat = son_fiyat * (1 + yillik_getiri)
+    return {"tahmin_yuzde": yillik_getiri, "son_fiyat": son_fiyat, "hedef_fiyat": hedef_fiyat}
 
 @st.cache_data
 def calculate_multi_factor_score(faktör_verileri, agirliklar):
@@ -95,11 +103,9 @@ def portfoyu_optimize_et(nihai_skorlar, fiyat_verisi, piyasa_rejimi):
         st.warning("Sinyaller anlamsız veya tekdüze. Varlıklar eşit olarak dağıtılacak.")
         num_assets = len(fiyat_verisi.columns)
         return {ticker: 1/num_assets for ticker in fiyat_verisi.columns}
-
     mu = nihai_skorlar
     S = risk_models.CovarianceShrinkage(fiyat_verisi[mu.index]).ledoit_wolf()
     ef = EfficientFrontier(mu, S, weight_bounds=(0, 1))
-    
     try:
         weights = ef.max_quadratic_utility()
     except (exceptions.InstantiationError, ValueError):
@@ -109,5 +115,4 @@ def portfoyu_optimize_et(nihai_skorlar, fiyat_verisi, piyasa_rejimi):
             st.warning("Optimizasyon başarısız oldu. Varlıklar eşit olarak dağıtılacak.")
             num_assets = len(fiyat_verisi.columns)
             return {ticker: 1/num_assets for ticker in fiyat_verisi.columns}
-    
     return ef.clean_weights()
